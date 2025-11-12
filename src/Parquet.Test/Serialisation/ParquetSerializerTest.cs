@@ -805,10 +805,11 @@ namespace Parquet.Test.Serialisation {
             }).ToList();
 
             using var ms = new MemoryStream();
+            var options = new ParquetSerializerOptions { RowGroupSize = 20 };
             if(useAsync) {
-                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, new ParquetSerializerOptions { RowGroupSize = 20 });
+                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, options);
             } else {
-                await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = 20 });
+                await ParquetSerializer.SerializeAsync(data, ms, options);
             }
 
             // validate we have 5 row groups in the resulting file
@@ -854,10 +855,11 @@ namespace Parquet.Test.Serialisation {
             }).ToList();
 
             using var ms = new MemoryStream();
+            var options = new ParquetSerializerOptions { RowGroupSize = rowGroupSize };
             if(useAsync) {
-                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, options);
             } else {
-                await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+                await ParquetSerializer.SerializeAsync(data, ms, options);
             }
 
             ms.Position = 0;
