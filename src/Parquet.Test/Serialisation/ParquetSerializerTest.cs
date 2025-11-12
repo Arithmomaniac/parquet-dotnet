@@ -2,10 +2,8 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json.Serialization;
-using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Parquet.Data;
@@ -28,11 +26,15 @@ namespace Parquet.Test.Serialisation {
     /// </summary>
     public class ParquetSerializerTest : TestBase {
 
-        private async Task Compare<T>(List<T> data, bool asJson = false, string? saveAsFile = null) where T : new() {
+        private async Task Compare<T>(List<T> data, bool asJson = false, string? saveAsFile = null, bool useAsync = false) where T : new() {
 
             // serialize to parquet
             using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(data, ms);
+            if(useAsync) {
+                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms);
+            } else {
+                await ParquetSerializer.SerializeAsync(data, ms);
+            }
 
             if(saveAsFile != null) {
                 await System.IO.File.WriteAllBytesAsync(saveAsFile, ms.ToArray());
@@ -82,8 +84,10 @@ namespace Parquet.Test.Serialisation {
             public Guid ExternalId { get; set; }
         }
 
-        [Fact]
-        public async Task Atomics_Simplest_Serde() {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Atomics_Simplest_Serde(bool useAsync) {
 
             var data = Enumerable.Range(0, 1_000).Select(i => new Record {
                 Timestamp = DateTime.UtcNow.AddSeconds(i),
@@ -92,7 +96,7 @@ namespace Parquet.Test.Serialisation {
                 ExternalId = Guid.NewGuid()
             }).ToList();
 
-            await Compare(data);
+            await Compare(data, useAsync: useAsync);
         }
         
         class TimespanRecord {
@@ -790,8 +794,10 @@ namespace Parquet.Test.Serialisation {
             }
         }
 
-        [Fact]
-        public async Task Specify_row_group_size() {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Specify_row_group_size(bool useAsync) {
             var data = Enumerable.Range(0, 100).Select(i => new Record {
                 Timestamp = DateTime.UtcNow.AddSeconds(i),
                 EventName = i % 2 == 0 ? "on" : "off",
@@ -799,7 +805,11 @@ namespace Parquet.Test.Serialisation {
             }).ToList();
 
             using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = 20 });
+            if(useAsync) {
+                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, new ParquetSerializerOptions { RowGroupSize = 20 });
+            } else {
+                await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = 20 });
+            }
 
             // validate we have 5 row groups in the resulting file
             ms.Position = 0;
@@ -829,8 +839,10 @@ namespace Parquet.Test.Serialisation {
             }
         }
 
-        [Fact]
-        public async Task Deserialize_as_async_enumerable() {
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task Deserialize_as_async_enumerable(bool useAsync) {
             DateTime now = DateTime.UtcNow;
             int records = 100;
             int rowGroupSize = 20;
@@ -842,7 +854,11 @@ namespace Parquet.Test.Serialisation {
             }).ToList();
 
             using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+            if(useAsync) {
+                await ParquetSerializer.SerializeAsync(data.ToAsyncEnumerable(), ms, new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+            } else {
+                await ParquetSerializer.SerializeAsync(data, ms, new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+            }
 
             ms.Position = 0;
             IList<Record> data2 = await ParquetSerializer.DeserializeAllAsync<Record>(ms).ToArrayAsync();
@@ -1195,93 +1211,6 @@ namespace Parquet.Test.Serialisation {
 
             Assert.Equal(testData.DateTimeDoubleDict.Count, buffer[0]?.DateTimeDoubleDict?.Count);
             Assert.Equal(testData.DateTimeDoubleDict[new DateTime(2021, 1, 1)], buffer[0]?.DateTimeDoubleDict?[new DateTime(2021, 1, 1)]);
-        }
-
-        // Helper method to create an async enumerable from a collection
-        private static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(IEnumerable<T> source, 
-            [EnumeratorCancellation] CancellationToken cancellationToken = default) {
-            foreach (var item in source) {
-                await Task.Yield(); // Simulate async operation
-                cancellationToken.ThrowIfCancellationRequested();
-                yield return item;
-            }
-        }
-
-        [Fact]
-        public async Task Serialize_IAsyncEnumerable_BasicRoundTrip() {
-            DateTime now = DateTime.UtcNow;
-            int records = 100;
-
-            var data = Enumerable.Range(0, records).Select(i => new Record {
-                Timestamp = now.AddSeconds(i),
-                EventName = i % 2 == 0 ? "on" : "off",
-                MeterValue = i,
-                ExternalId = Guid.NewGuid()
-            }).ToList();
-
-            using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms);
-
-            ms.Position = 0;
-            IList<Record> data2 = await ParquetSerializer.DeserializeAsync<Record>(ms);
-
-            Assert.Equal(data.Count, data2.Count);
-            Assert.Equivalent(data, data2);
-        }
-
-        [Fact]
-        public async Task Serialize_IAsyncEnumerable_WithRowGroupSize() {
-            DateTime now = DateTime.UtcNow;
-            int records = 100;
-            int rowGroupSize = 20;
-
-            var data = Enumerable.Range(0, records).Select(i => new Record {
-                Timestamp = now.AddSeconds(i),
-                EventName = i % 2 == 0 ? "on" : "off",
-                MeterValue = i,
-                ExternalId = Guid.NewGuid()
-            }).ToList();
-
-            using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms, 
-                new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
-
-            ms.Position = 0;
-            using ParquetReader reader = await ParquetReader.CreateAsync(ms);
-            
-            // Verify we have the expected number of row groups
-            int expectedRowGroups = (records + rowGroupSize - 1) / rowGroupSize;
-            Assert.Equal(expectedRowGroups, reader.RowGroupCount);
-
-            // Verify data integrity
-            ms.Position = 0;
-            IList<Record> data2 = await ParquetSerializer.DeserializeAsync<Record>(ms);
-            Assert.Equal(data.Count, data2.Count);
-            Assert.Equivalent(data, data2);
-        }
-
-        [Fact]
-        public async Task Serialize_IAsyncEnumerable_RoundTripWithDeserializeAllAsync() {
-            DateTime now = DateTime.UtcNow;
-            int records = 100;
-            int rowGroupSize = 25;
-
-            var data = Enumerable.Range(0, records).Select(i => new Record {
-                Timestamp = now.AddSeconds(i),
-                EventName = i % 2 == 0 ? "on" : "off",
-                MeterValue = i,
-                ExternalId = Guid.NewGuid()
-            }).ToList();
-
-            using var ms = new MemoryStream();
-            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms,
-                new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
-
-            ms.Position = 0;
-            IList<Record> data2 = await ParquetSerializer.DeserializeAllAsync<Record>(ms).ToListAsync();
-
-            Assert.Equal(data.Count, data2.Count);
-            Assert.Equivalent(data, data2);
         }
     }
 }
