@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Apache.Arrow;
 using Parquet.Data;
@@ -1193,6 +1195,93 @@ namespace Parquet.Test.Serialisation {
 
             Assert.Equal(testData.DateTimeDoubleDict.Count, buffer[0]?.DateTimeDoubleDict?.Count);
             Assert.Equal(testData.DateTimeDoubleDict[new DateTime(2021, 1, 1)], buffer[0]?.DateTimeDoubleDict?[new DateTime(2021, 1, 1)]);
+        }
+
+        // Helper method to create an async enumerable from a collection
+        private static async IAsyncEnumerable<T> ToAsyncEnumerable<T>(IEnumerable<T> source, 
+            [EnumeratorCancellation] CancellationToken cancellationToken = default) {
+            foreach (var item in source) {
+                await Task.Yield(); // Simulate async operation
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return item;
+            }
+        }
+
+        [Fact]
+        public async Task Serialize_IAsyncEnumerable_BasicRoundTrip() {
+            DateTime now = DateTime.UtcNow;
+            int records = 100;
+
+            var data = Enumerable.Range(0, records).Select(i => new Record {
+                Timestamp = now.AddSeconds(i),
+                EventName = i % 2 == 0 ? "on" : "off",
+                MeterValue = i,
+                ExternalId = Guid.NewGuid()
+            }).ToList();
+
+            using var ms = new MemoryStream();
+            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms);
+
+            ms.Position = 0;
+            IList<Record> data2 = await ParquetSerializer.DeserializeAsync<Record>(ms);
+
+            Assert.Equal(data.Count, data2.Count);
+            Assert.Equivalent(data, data2);
+        }
+
+        [Fact]
+        public async Task Serialize_IAsyncEnumerable_WithRowGroupSize() {
+            DateTime now = DateTime.UtcNow;
+            int records = 100;
+            int rowGroupSize = 20;
+
+            var data = Enumerable.Range(0, records).Select(i => new Record {
+                Timestamp = now.AddSeconds(i),
+                EventName = i % 2 == 0 ? "on" : "off",
+                MeterValue = i,
+                ExternalId = Guid.NewGuid()
+            }).ToList();
+
+            using var ms = new MemoryStream();
+            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms, 
+                new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+
+            ms.Position = 0;
+            using ParquetReader reader = await ParquetReader.CreateAsync(ms);
+            
+            // Verify we have the expected number of row groups
+            int expectedRowGroups = (records + rowGroupSize - 1) / rowGroupSize;
+            Assert.Equal(expectedRowGroups, reader.RowGroupCount);
+
+            // Verify data integrity
+            ms.Position = 0;
+            IList<Record> data2 = await ParquetSerializer.DeserializeAsync<Record>(ms);
+            Assert.Equal(data.Count, data2.Count);
+            Assert.Equivalent(data, data2);
+        }
+
+        [Fact]
+        public async Task Serialize_IAsyncEnumerable_RoundTripWithDeserializeAllAsync() {
+            DateTime now = DateTime.UtcNow;
+            int records = 100;
+            int rowGroupSize = 25;
+
+            var data = Enumerable.Range(0, records).Select(i => new Record {
+                Timestamp = now.AddSeconds(i),
+                EventName = i % 2 == 0 ? "on" : "off",
+                MeterValue = i,
+                ExternalId = Guid.NewGuid()
+            }).ToList();
+
+            using var ms = new MemoryStream();
+            await ParquetSerializer.SerializeAsync(ToAsyncEnumerable(data), ms,
+                new ParquetSerializerOptions { RowGroupSize = rowGroupSize });
+
+            ms.Position = 0;
+            IList<Record> data2 = await ParquetSerializer.DeserializeAllAsync<Record>(ms).ToListAsync();
+
+            Assert.Equal(data.Count, data2.Count);
+            Assert.Equivalent(data, data2);
         }
     }
 }
